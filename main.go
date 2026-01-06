@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,11 +19,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var (
-	version = "dev"
-)
+var version = "dev"
 
-var errSignalReceived = fmt.Errorf("signal received")
+type WebSocketMessage struct {
+	Webhook     Webhook `json:"webhook"`
+	BalanceSats int     `json:"balance_sats"`
+}
 
 type Webhook struct {
 	ID        int    `json:"id"`
@@ -33,6 +35,23 @@ type Webhook struct {
 	Body      string `json:"body"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+}
+
+type LogEntry struct {
+	Time        string `json:"time"`
+	Event       string `json:"event"`
+	Method      string `json:"method,omitempty"`
+	Path        string `json:"path,omitempty"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	BalanceSats int    `json:"balance_sats,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Response    string `json:"response,omitempty"`
+}
+
+func logJSON(entry LogEntry) {
+	entry.Time = time.Now().Format(time.RFC3339)
+	data, _ := json.Marshal(entry)
+	fmt.Println(string(data))
 }
 
 func main() {
@@ -112,25 +131,38 @@ func runConnect(args []string) error {
 	log.Printf("Connecting to %s...", *serverURL)
 	log.Printf("Forwarding webhooks to %s", *forwardURL)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
 	for {
-		err := connectAndListen(wsURL, *forwardURL, *verbose, sigCh)
-		if err == errSignalReceived {
+		err := connectAndListen(ctx, wsURL, *forwardURL, *verbose)
+		if ctx.Err() != nil {
 			log.Println("Shutting down...")
 			return nil
 		}
 		if err != nil {
 			log.Printf("Connection error: %v", err)
 			log.Println("Reconnecting in 5 seconds...")
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				log.Println("Shutting down...")
+				return nil
+			case <-time.After(5 * time.Second):
+			}
 		}
 	}
 }
 
-func connectAndListen(wsURL, forwardURL string, verbose bool, sigCh chan os.Signal) error {
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+func connectAndListen(ctx context.Context, wsURL, forwardURL string, verbose bool) error {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -151,36 +183,47 @@ func connectAndListen(wsURL, forwardURL string, verbose bool, sigCh chan os.Sign
 				return
 			}
 
-			var webhook Webhook
-			if err := json.Unmarshal(message, &webhook); err != nil {
-				log.Printf("Failed to parse webhook: %v", err)
+			var msg WebSocketMessage
+			if err := json.Unmarshal(message, &msg); err != nil {
+				log.Printf("Failed to parse message: %v", err)
 				continue
 			}
 
-			go forwardWebhook(webhook, forwardURL, verbose)
+			go forwardWebhook(msg.Webhook, msg.BalanceSats, forwardURL, verbose)
 		}
 	}()
 
 	select {
 	case <-done:
 		return fmt.Errorf("connection closed")
-	case <-sigCh:
+	case <-ctx.Done():
 		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		return errSignalReceived
+		return ctx.Err()
 	}
 }
 
-func forwardWebhook(webhook Webhook, forwardURL string, verbose bool) {
+func forwardWebhook(webhook Webhook, balanceSats int, forwardURL string, verbose bool) {
 	targetURL := forwardURL
 	if webhook.Path != "/" && webhook.Path != "" {
 		targetURL = strings.TrimSuffix(forwardURL, "/") + webhook.Path
 	}
 
-	log.Printf("-> %s %s", webhook.Method, webhook.Path)
+	logJSON(LogEntry{
+		Event:       "webhook_received",
+		Method:      webhook.Method,
+		Path:        webhook.Path,
+		BalanceSats: balanceSats,
+	})
 
 	req, err := http.NewRequest(webhook.Method, targetURL, bytes.NewBufferString(webhook.Body))
 	if err != nil {
-		log.Printf("  x Failed to create request: %v", err)
+		logJSON(LogEntry{
+			Event:       "forward_error",
+			Method:      webhook.Method,
+			Path:        webhook.Path,
+			BalanceSats: balanceSats,
+			Error:       err.Error(),
+		})
 		return
 	}
 
@@ -196,19 +239,33 @@ func forwardWebhook(webhook Webhook, forwardURL string, verbose bool) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("  x Forward failed: %v", err)
+		logJSON(LogEntry{
+			Event:       "forward_error",
+			Method:      webhook.Method,
+			Path:        webhook.Path,
+			BalanceSats: balanceSats,
+			Error:       err.Error(),
+		})
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("  < %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	entry := LogEntry{
+		Event:       "webhook_forwarded",
+		Method:      webhook.Method,
+		Path:        webhook.Path,
+		StatusCode:  resp.StatusCode,
+		BalanceSats: balanceSats,
+	}
 
 	if verbose {
 		body, _ := io.ReadAll(resp.Body)
 		if len(body) > 0 {
-			log.Printf("  Response: %s", truncate(string(body), 200))
+			entry.Response = truncate(string(body), 200)
 		}
 	}
+
+	logJSON(entry)
 }
 
 func truncate(s string, maxLen int) string {
