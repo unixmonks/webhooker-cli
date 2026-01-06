@@ -4,20 +4,44 @@ A CLI tool for receiving webhooks locally during development. Connect to [webhoo
 
 ## Installation
 
+### macOS
+
+```bash
+# Apple Silicon (M1/M2/M3)
+curl -sL https://github.com/unixmonks/webhooker-cli/releases/latest/download/webhooker-cli_darwin_arm64.tar.gz | tar xz
+sudo mv webhooker-cli /usr/local/bin/webhooker
+
+# Intel
+curl -sL https://github.com/unixmonks/webhooker-cli/releases/latest/download/webhooker-cli_darwin_amd64.tar.gz | tar xz
+sudo mv webhooker-cli /usr/local/bin/webhooker
+```
+
+### Linux
+
+```bash
+# x86_64
+curl -sL https://github.com/unixmonks/webhooker-cli/releases/latest/download/webhooker-cli_linux_amd64.tar.gz | tar xz
+sudo mv webhooker-cli /usr/local/bin/webhooker
+
+# ARM64
+curl -sL https://github.com/unixmonks/webhooker-cli/releases/latest/download/webhooker-cli_linux_arm64.tar.gz | tar xz
+sudo mv webhooker-cli /usr/local/bin/webhooker
+```
+
+### Windows
+
+Download the latest `.zip` from the [releases page](https://github.com/unixmonks/webhooker-cli/releases) and add to your PATH.
+
 ### From source
 
 ```bash
-go install github.com/webhooker/webhooker-cli@latest
+go install github.com/unixmonks/webhooker-cli@latest
 ```
-
-### From binary
-
-Download the latest release from the [releases page](https://github.com/webhooker/webhooker-cli/releases).
 
 ### Build from source
 
 ```bash
-git clone https://github.com/webhooker/webhooker-cli.git
+git clone https://github.com/unixmonks/webhooker-cli.git
 cd webhooker-cli
 make build
 ```
